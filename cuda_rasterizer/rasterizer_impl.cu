@@ -217,7 +217,9 @@ int CudaRasterizer::Rasterizer::forward(
 	const bool prefiltered,
 	float* out_color,
 	int* radii,
-	bool debug)
+	bool debug,
+	float* out_depth,
+	float* out_alpha)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -330,7 +332,13 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		background,
-		out_color), debug)
+		out_color,
+		// LasPro Viewer extension: forward the per-gaussian view-space
+		// depths from preprocess straight into the per-pixel integrator,
+		// along with the caller's optional output buffers.
+		geomState.depths,
+		out_depth,
+		out_alpha), debug)
 
 	return num_rendered;
 }

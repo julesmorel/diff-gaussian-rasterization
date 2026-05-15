@@ -270,7 +270,15 @@ renderCUDA(
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
-	float* __restrict__ out_color)
+	float* __restrict__ out_color,
+	// LasPro Viewer extension. All three of (depths, out_depth, out_alpha)
+	// must be non-null together, or all null. When provided, the kernel
+	// accumulates alpha-weighted view-space depth using `depths[gauss_id]`
+	// from the preprocess pass and writes per-pixel expected depth +
+	// coverage. See rasterizer.h for semantics.
+	const float* __restrict__ depths,
+	float* __restrict__ out_depth,
+	float* __restrict__ out_alpha)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -301,6 +309,9 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+	// LasPro: alpha-weighted depth accumulator. Unused (compiled away) when
+	// the depth-output path is disabled by passing depths==nullptr.
+	float D = 0.0f;
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -354,6 +365,14 @@ renderCUDA(
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
+			// LasPro: same alpha*T weighting, applied to the per-gaussian
+			// view-space depth from preprocess (geomState.depths). Skipped
+			// at compile time when depths==nullptr because the result is
+			// unused — but cheap enough to evaluate unconditionally if the
+			// branch is awkward.
+			if (depths != nullptr)
+				D += depths[collected_id[j]] * alpha * T;
+
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -370,6 +389,19 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+
+		// LasPro: surface per-pixel depth + coverage when the caller
+		// requested them. Expected depth diverges at zero coverage —
+		// emit a sentinel "far" value so the host-side compositor can
+		// treat these pixels as "no splat here" without a separate
+		// coverage check (it gates on alpha defensively anyway).
+		if (out_alpha != nullptr)
+		{
+			const float cov = 1.0f - T;
+			out_alpha[pix_id] = cov;
+			if (out_depth != nullptr)
+				out_depth[pix_id] = (cov > 1e-6f) ? (D / cov) : 1e10f;
+		}
 	}
 }
 
@@ -384,7 +416,10 @@ void FORWARD::render(
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
-	float* out_color)
+	float* out_color,
+	const float* depths,
+	float* out_depth,
+	float* out_alpha)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -396,7 +431,10 @@ void FORWARD::render(
 		final_T,
 		n_contrib,
 		bg_color,
-		out_color);
+		out_color,
+		depths,
+		out_depth,
+		out_alpha);
 }
 
 void FORWARD::preprocess(int P, int D, int M,

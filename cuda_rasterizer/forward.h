@@ -59,7 +59,12 @@ namespace FORWARD
 		float* final_T,
 		uint32_t* n_contrib,
 		const float* bg_color,
-		float* out_color);
+		float* out_color,
+		// LasPro Viewer extension: optional per-pixel depth + alpha outputs.
+		// See rasterizer.h for semantics. Both nullable.
+		const float* depths = nullptr,
+		float* out_depth = nullptr,
+		float* out_alpha = nullptr);
 }
 
 

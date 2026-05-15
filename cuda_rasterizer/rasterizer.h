@@ -50,7 +50,19 @@ namespace CudaRasterizer
 			const bool prefiltered,
 			float* out_color,
 			int* radii = nullptr,
-			bool debug = false);
+			bool debug = false,
+			// LasPro Viewer extension: optional per-pixel outputs.
+			//   out_depth[pix] = alpha-weighted expected view-space depth
+			//                    (in the same view-space frame as the values
+			//                    written to geomState.depths internally —
+			//                    i.e. +Z forward in the rasterizer's view).
+			//                    Pixels with coverage below 1e-6 get a
+			//                    sentinel "far" value (1e10f).
+			//   out_alpha[pix] = real coverage = 1 - final_T from the
+			//                    front-to-back integration.
+			// Both buffers, if non-null, must be width*height floats.
+			float* out_depth = nullptr,
+			float* out_alpha = nullptr);
 
 		static void backward(
 			const int P, int D, int M, int R,
