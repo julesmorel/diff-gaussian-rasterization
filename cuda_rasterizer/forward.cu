@@ -71,7 +71,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 // Forward version of 2D covariance matrix computation
-__device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
+__device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix, bool antialiasing, float& opacity_scale)
 {
 	// The following models the steps outlined by equations 29
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
@@ -105,10 +105,24 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
+	// LasPro Mip-Splatting 2D filter: scale opacity by sqrt(det_before/det_after)
+	// so the low-pass conserves energy instead of fattening the footprint.
+	const float det_before = cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1];
+
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
 	cov[0][0] += 0.3f;
 	cov[1][1] += 0.3f;
+
+	if (antialiasing)
+	{
+		const float det_after = cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1];
+		opacity_scale = sqrt(max(1e-7f, det_before / det_after));
+	}
+	else
+	{
+		opacity_scale = 1.0f;
+	}
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
@@ -177,7 +191,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	bool antialiasing,
+	const float* clip_min,
+	const float* clip_max,
+	const float* clip_model)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -187,6 +205,18 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// this Gaussian will not be processed further.
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
+
+	// LasPro cross-section cull: transform the center to scene-local space
+	// (clip_model * mean) and reject if outside the box.
+	if (clip_min != nullptr && clip_max != nullptr && clip_model != nullptr)
+	{
+		float3 m = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
+		float4 s = transformPoint4x4(m, clip_model);
+		if (s.x < clip_min[0] || s.x > clip_max[0] ||
+		    s.y < clip_min[1] || s.y > clip_max[1] ||
+		    s.z < clip_min[2] || s.z > clip_max[2])
+			return;
+	}
 
 	// Perform near culling, quit if outside.
 	float3 p_view;
@@ -213,7 +243,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Compute 2D screen-space covariance matrix
-	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+	float opacity_scale = 1.0f;
+	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix, antialiasing, opacity_scale);
 
 	// Invert covariance (EWA algorithm)
 	float det = (cov.x * cov.z - cov.y * cov.y);
@@ -251,7 +282,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
+	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] * opacity_scale };
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -461,7 +492,11 @@ void FORWARD::preprocess(int P, int D, int M,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	bool antialiasing,
+	const float* clip_min,
+	const float* clip_max,
+	const float* clip_model)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -488,6 +523,10 @@ void FORWARD::preprocess(int P, int D, int M,
 		conic_opacity,
 		grid,
 		tiles_touched,
-		prefiltered
+		prefiltered,
+		antialiasing,
+		clip_min,
+		clip_max,
+		clip_model
 		);
 }

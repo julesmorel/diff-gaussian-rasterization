@@ -62,7 +62,16 @@ namespace CudaRasterizer
 			//                    front-to-back integration.
 			// Both buffers, if non-null, must be width*height floats.
 			float* out_depth = nullptr,
-			float* out_alpha = nullptr);
+			float* out_alpha = nullptr,
+			// LasPro Viewer extension: Mip-Splatting 2D filter. When true,
+			// opacity is energy-compensated for the screen-space dilation.
+			bool antialiasing = false,
+			// LasPro Viewer extension: optional cross-section clip box (device
+			// pointers). When all three are non-null, gaussians whose centers
+			// (clip_model * mean) fall outside [clip_min, clip_max] are culled.
+			const float* clip_min = nullptr,
+			const float* clip_max = nullptr,
+			const float* clip_model = nullptr);
 
 		static void backward(
 			const int P, int D, int M, int R,

@@ -45,7 +45,19 @@ namespace FORWARD
 		float4* conic_opacity,
 		const dim3 grid,
 		uint32_t* tiles_touched,
-		bool prefiltered);
+		bool prefiltered,
+		// LasPro Viewer extension: Mip-Splatting 2D filter. When true, opacity
+		// is scaled by sqrt(det_before/det_after) to energy-compensate the
+		// screen-space dilation.
+		bool antialiasing,
+		// LasPro Viewer extension: optional cross-section clip box. When all
+		// three are non-null, gaussians whose centers (clip_model * mean) fall
+		// outside [clip_min, clip_max] are culled (radius/tiles left 0).
+		//   clip_min/clip_max — 3 device floats each (scene-local AABB)
+		//   clip_model        — 16 device floats, column-major
+		const float* clip_min = nullptr,
+		const float* clip_max = nullptr,
+		const float* clip_model = nullptr);
 
 	// Main rasterization method.
 	void render(
