@@ -71,7 +71,13 @@ namespace CudaRasterizer
 			// (clip_model * mean) fall outside [clip_min, clip_max] are culled.
 			const float* clip_min = nullptr,
 			const float* clip_max = nullptr,
-			const float* clip_model = nullptr);
+			const float* clip_model = nullptr,
+			// LasPro Viewer extension: optional uint8-packed SH-rest band. When
+			// non-null, `shs` holds DC only (3 floats per gaussian) and the
+			// rest coefficients are decoded from this buffer (45 bytes per
+			// gaussian, band-major). When null, `shs` is read as 48 floats per
+			// gaussian band-major (the upstream layout).
+			const uint8_t* shs_rest_u8 = nullptr);
 
 		static void backward(
 			const int P, int D, int M, int R,

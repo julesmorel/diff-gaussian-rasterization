@@ -223,7 +223,8 @@ int CudaRasterizer::Rasterizer::forward(
 	bool antialiasing,
 	const float* clip_min,
 	const float* clip_max,
-	const float* clip_model)
+	const float* clip_model,
+	const uint8_t* shs_rest_u8)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -259,6 +260,7 @@ int CudaRasterizer::Rasterizer::forward(
 		(glm::vec4*)rotations,
 		opacities,
 		shs,
+		shs_rest_u8,
 		geomState.clamped,
 		cov3D_precomp,
 		colors_precomp,

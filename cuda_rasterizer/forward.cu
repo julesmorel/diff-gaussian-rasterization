@@ -15,48 +15,79 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+// LasPro Viewer extension: range for uint8-quantized SH-rest coefficients.
+// Coefficients are encoded as round(((v / kPackedShRange) + 1) * 0.5 * 255),
+// decoded as ((u8 / 255) * 2 - 1) * kPackedShRange. Matches the DirectXSplat
+// (pbkx) and SuperSplat defaults.
+__device__ const float kPackedShRange = 4.0f;
+
+__device__ __forceinline__ glm::vec3 loadShRestU8(const uint8_t* shs_rest_u8, int idx, int band /* 0..14 */)
+{
+	const int base = idx * 45 + band * 3;
+	const float scale = (2.0f / 255.0f) * kPackedShRange;
+	const float bias  = -kPackedShRange;
+	return glm::vec3(
+		static_cast<float>(shs_rest_u8[base + 0]) * scale + bias,
+		static_cast<float>(shs_rest_u8[base + 1]) * scale + bias,
+		static_cast<float>(shs_rest_u8[base + 2]) * scale + bias);
+}
+
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
-__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
+//
+// LasPro Viewer extension: when shs_rest_u8 != nullptr, the rest coefficients
+// (bands 1..15) are read from shs_rest_u8 (45 bytes/gaussian, band-major) and
+// decoded on the fly. `shs` then holds only the DC band (3 floats/gaussian)
+// and `max_coeffs` is ignored. When shs_rest_u8 == nullptr, the original
+// path (shs = 48 floats/gaussian band-major) is used unchanged.
+__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const uint8_t* shs_rest_u8, bool* clamped)
 {
-	// The implementation is loosely based on code for 
-	// "Differentiable Point-Based Radiance Fields for 
+	// The implementation is loosely based on code for
+	// "Differentiable Point-Based Radiance Fields for
 	// Efficient View Synthesis" by Zhang et al. (2022)
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	const bool packed = (shs_rest_u8 != nullptr);
+	glm::vec3* sh = ((glm::vec3*)shs) + idx * (packed ? 1 : max_coeffs);
 	glm::vec3 result = SH_C0 * sh[0];
+
+	// Rest-band accessor: in the original path, sh[1..15] are floats laid out
+	// band-major after sh[0]. In the packed path, the rest coefficients live in
+	// shs_rest_u8 at band-major offsets 0..14 (= sh indices 1..15).
+	auto rest = [&](int sh_index) -> glm::vec3 {
+		return packed ? loadShRestU8(shs_rest_u8, idx, sh_index - 1) : sh[sh_index];
+	};
 
 	if (deg > 0)
 	{
 		float x = dir.x;
 		float y = dir.y;
 		float z = dir.z;
-		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
+		result = result - SH_C1 * y * rest(1) + SH_C1 * z * rest(2) - SH_C1 * x * rest(3);
 
 		if (deg > 1)
 		{
 			float xx = x * x, yy = y * y, zz = z * z;
 			float xy = x * y, yz = y * z, xz = x * z;
 			result = result +
-				SH_C2[0] * xy * sh[4] +
-				SH_C2[1] * yz * sh[5] +
-				SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
-				SH_C2[3] * xz * sh[7] +
-				SH_C2[4] * (xx - yy) * sh[8];
+				SH_C2[0] * xy * rest(4) +
+				SH_C2[1] * yz * rest(5) +
+				SH_C2[2] * (2.0f * zz - xx - yy) * rest(6) +
+				SH_C2[3] * xz * rest(7) +
+				SH_C2[4] * (xx - yy) * rest(8);
 
 			if (deg > 2)
 			{
 				result = result +
-					SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
-					SH_C3[1] * xy * z * sh[10] +
-					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
-					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
-					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
-					SH_C3[5] * z * (xx - yy) * sh[14] +
-					SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+					SH_C3[0] * y * (3.0f * xx - yy) * rest(9) +
+					SH_C3[1] * xy * z * rest(10) +
+					SH_C3[2] * y * (4.0f * zz - xx - yy) * rest(11) +
+					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * rest(12) +
+					SH_C3[4] * x * (4.0f * zz - xx - yy) * rest(13) +
+					SH_C3[5] * z * (xx - yy) * rest(14) +
+					SH_C3[6] * x * (xx - 3.0f * yy) * rest(15);
 			}
 		}
 	}
@@ -174,6 +205,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
+	const uint8_t* shs_rest_u8,
 	bool* clamped,
 	const float* cov3D_precomp,
 	const float* colors_precomp,
@@ -271,7 +303,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, shs_rest_u8, clamped);
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
 		rgb[idx * C + 2] = result.z;
@@ -475,6 +507,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
+	const uint8_t* shs_rest_u8,
 	bool* clamped,
 	const float* cov3D_precomp,
 	const float* colors_precomp,
@@ -506,6 +539,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		rotations,
 		opacities,
 		shs,
+		shs_rest_u8,
 		clamped,
 		cov3D_precomp,
 		colors_precomp,

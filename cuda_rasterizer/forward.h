@@ -28,6 +28,12 @@ namespace FORWARD
 		const glm::vec4* rotations,
 		const float* opacities,
 		const float* shs,
+		// LasPro Viewer extension: optional uint8-packed SH-rest band. When
+		// non-null, `shs` holds only the DC band (3 floats per gaussian) and
+		// the rest coefficients are read from this buffer (45 bytes per
+		// gaussian, band-major, decoded by ((u8/255)*2-1)*4). When null, `shs`
+		// is interpreted in the original (N,16,3) band-major float layout.
+		const uint8_t* shs_rest_u8,
 		bool* clamped,
 		const float* cov3D_precomp,
 		const float* colors_precomp,
